@@ -1,7 +1,8 @@
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 // Exercise the production service and stdin reader in a real Swift process.
@@ -9,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 describe.skipIf(process.platform !== "darwin")("recorder process lifecycle", () => {
 	let directory: string;
 	let executable: string;
-	beforeAll(() => {
+	beforeAll(async () => {
 		directory = mkdtempSync(join(tmpdir(), "recordly-lifecycle-"));
 		executable = join(directory, "helper");
 		const source = readFileSync(
@@ -63,19 +64,21 @@ commandsFinished.wait()
 exit(success ? 0 : 1)
 `,
 		);
-		const build = spawnSync(
+		// Async so a long cold compile does not block the worker's RPC heartbeat.
+		await promisify(execFile)(
 			"swiftc",
 			[
+				// A shared cache survives runs: a cold Foundation module build alone
+				// takes over a minute on older Intel Macs; warm it is under a second.
 				"-module-cache-path",
-				join(directory, "cache"),
+				join(tmpdir(), "recordly-swift-module-cache"),
 				join(directory, "main.swift"),
 				"-o",
 				executable,
 			],
-			{ encoding: "utf8", timeout: 60_000 },
+			{ encoding: "utf8", timeout: 170_000 },
 		);
-		expect(build.status, build.stderr).toBe(0);
-	}, 60_000);
+	}, 180_000);
 	afterAll(() => {
 		if (directory) rmSync(directory, { recursive: true, force: true });
 	});
